@@ -27,21 +27,21 @@
 //----------------------------------------------------------------------------//
 //-------------------------------- Config  -----------------------------------//
 //----------------------------------------------------------------------------//
-#define SOFTWARE_VERSION		"v1.4"
+#define SOFTWARE_VERSION		"v1.6"
 #define WLAN_SSID 				"myssid"
-#define WLAN_PASS 				"mywifipasswd"
-#define MQTT_SERVER 			"192.168.1.2"
+#define WLAN_PASS 				"mypass"
+#define MQTT_SERVER 			"192.168.2.5"
 #define MQTT_SERVERPORT 		1883 					// use 8883 for SSL
 #define MQTT_USERNAME 			"mqttuser"
 #define MQTT_KEY 				"mosquitto"
-#define LOCATION				"my_location"
-#define NAME 					"E_Meter"
+#define LOCATION				"Keller"
+#define NAME 					"Stromzaehler"
 //#define OTA_PASS				"admin"
 #define STATE_UPDATE_INTERVAL	5000 					// MQTT state update interval in [ms] (<5000ms could be critical for parsing in worst case)
 #define AVAILABILITY_ONLINE 	"online"
 #define AVAILABILITY_OFFLINE 	"offline"
-//#define DEBUG 										// Enable Debug Level1
-//#define DEBUG2 										// Enable Debug Level2
+#define DEBUG
+//#define DEBUG2
 
 //----------------------------------------------------------------------------//
 //--------------------------------- Macros -----------------------------------//
@@ -57,7 +57,7 @@ const uint8_t startSequence[] = 						{ 0x1B, 0x1B, 0x1B, 0x1B, 0x01, 0x01, 0x01
 const uint8_t stopSequence[]  = 						{ 0x1B, 0x1B, 0x1B, 0x1B, 0x1A }; //end sequence of SML protocol
 
 const uint8_t Zaehlerstand_Bezug_sequence[] = 			{0x77, 0x07, 0x01, 0x00, 0x01, 0x08, 0x00, 0xFF}; 
-//const uint8_t Zaehlerstand_Einspeisung_sequence[] = 	{0x77, 0x07, 0x01, 0x00, 0x02, 0x08, 0x00, 0xFF}; 
+const uint8_t Zaehlerstand_Einspeisung_sequence[] = 	{0x77, 0x07, 0x01, 0x00, 0x02, 0x08, 0x00, 0xFF}; 
 const uint8_t Wirkleistung_sequence[] = 				{0x77, 0x07, 0x01, 0x00, 0x10, 0x07, 0x00, 0xFF}; 
 const uint8_t Spannung_L1_sequence[] = 					{0x77, 0x07, 0x01, 0x00, 0x20, 0x07, 0x00, 0xFF}; 
 const uint8_t Spannung_L2_sequence[] = 					{0x77, 0x07, 0x01, 0x00, 0x34, 0x07, 0x00, 0xFF}; 
@@ -93,18 +93,19 @@ uint8_t startIndex = 0;
 uint8_t stopIndex = 0;
 uint8_t sml_read_state = 0;
 
-double Zaehlerstand = 0;
-float Wirkleistung = 0;
-float SpannungL1 = 0;
-float SpannungL2 = 0;
-float SpannungL3 = 0;
-float StromL1 = 0;
-float StromL2= 0;
-float StromL3= 0;
-float Phi_L1 = 0;
-float Phi_L2 = 0;
-float Phi_L3 = 0;
-float Netzfrequenz = 0;
+double Zaehlerstand_180 = 0;
+double Zaehlerstand_280 = 0;
+double Wirkleistung = 0;
+double SpannungL1 = 0;
+double SpannungL2 = 0;
+double SpannungL3 = 0;
+double StromL1 = 0;
+double StromL2= 0;
+double StromL3= 0;
+double Phi_L1 = 0;
+double Phi_L2 = 0;
+double Phi_L3 = 0;
+double Netzfrequenz = 0;
 
 char identifier[24];
 char MQTT_TOPIC_AVAILABILITY[128];
@@ -159,7 +160,8 @@ void loop()
 		get_sml_message();
 	else if(sml_read_state == 2)
 	{
-		Zaehlerstand = get_total_consumption_from_SML(Zaehlerstand_Bezug_sequence);
+		Zaehlerstand_180 = get_values_from_SML(Zaehlerstand_Bezug_sequence);
+		Zaehlerstand_280 = get_values_from_SML(Zaehlerstand_Einspeisung_sequence);
 		Wirkleistung = get_values_from_SML(Wirkleistung_sequence);
 		SpannungL1 = get_values_from_SML(Spannung_L1_sequence);
 		SpannungL2 = get_values_from_SML(Spannung_L2_sequence);
@@ -269,7 +271,8 @@ void mqttReconnect()
 			Serial.println("Sending Autoconfig....");
 
 			publish_autoconfig_entity("WiFi","dBm","mdi:wifi",3);
-			publish_autoconfig_entity("Zaehlerstand","Wh","mdi:flash",1);
+			publish_autoconfig_entity("Zaehlerstand_180","Wh","mdi:flash",1);
+			publish_autoconfig_entity("Zaehlerstand_280","Wh","mdi:flash",1);
 			publish_autoconfig_entity("Wirkleistung","W","mdi:alpha-p-circle",3);
 			publish_autoconfig_entity("SummePhasenleistung","W","mdi:alpha-p-circle",3);
 			publish_autoconfig_entity("Spannung_L1","V","mdi:alpha-u-circle-outline",3);
@@ -332,7 +335,8 @@ void publishState()
 
 	stateJson["Reset"] = "off";
 	stateJson["WiFi"] = WiFi.RSSI();
-	stateJson["Zaehlerstand"] = String(Zaehlerstand,1);
+	stateJson["Zaehlerstand_180"] = String(Zaehlerstand_180,1);
+	stateJson["Zaehlerstand_280"] = String(Zaehlerstand_280,1);
 	stateJson["Wirkleistung"] = String(Wirkleistung,0);
 	stateJson["Spannung_L1"] = String(SpannungL1,1);
 	stateJson["Spannung_L2"] = String(SpannungL2,1);
@@ -482,125 +486,89 @@ void get_sml_message()															//STATE 1: Function to record the complete 
 }
 
 
-double get_total_consumption_from_SML(const uint8_t* sequence) 
+double get_values_from_SML(const uint8_t* sequence) 
 {
 	uint32_t temp = 0;
 	uint8_t sequence_index = 0; 												//start at position 0 of recorded sml-message
 	float scaler = 0.0;
 	double output = 0;
+	uint8_t n_bytes = 0;
+	bool matched = false;
 
-	for(uint16_t x=parse_index; x<sizeof(smlMessage); x++)						//for as long there are not reached the end of message buffer
+
+	for(uint16_t x = parse_index; x<sizeof(smlMessage); x++)					//for as long there are not reached the end of message buffer
 	{ 
 		if(smlMessage[x] == sequence[sequence_index]) 							//compare with sequence
 		{ 
 			sequence_index++;
-			if(sequence_index == 8)												//in complete sequence is found
+			if(sequence_index == 8)												//MATCH!!complete sequence is found
 			{
-				scaler = pow(10.0,(int8_t)smlMessage[x+16]);
-
-				temp += smlMessage[x+18];
-				temp <<= 8; 
-				temp +=smlMessage[x+19];
-				temp <<= 8; 
-				temp +=smlMessage[x+20];
-				temp <<= 8; 
-				temp +=smlMessage[x+21];
-				parse_index = x+21;
-
-				output= (double)temp*scaler;
-
+				parse_index = x+1;
+				matched = true;
 				#ifdef DEBUG
-					Serial.print("sequence_found...4Byte parse complete: ");
-					Serial.println(String(output));
+					Serial.println("Sequence matched at: " + String(parse_index));
 				#endif
-
-				return(output);
+				break;
 			}
 		}
-		else 
-			sequence_index = 0;													//Jump back...
 	}
-	
-	#ifdef DEBUG
-		Serial.println("Parse ERROR 4bit - No Sequence found");
-	#endif
-	parse_error_flag = true;
-	return 0;
-}
 
-float get_values_from_SML(const uint8_t* sequence) 
-{
-	uint16_t temp = 0;
-	uint8_t sequence_index = 0; 												//start at position 0 of exctracted SML message
-	float scaler = 0.0;
-	float output = 0.0;
-
-	for(uint16_t x=parse_index; x<sizeof(smlMessage); x++)						//for as long there are element in the exctracted SML message
-	{ 
-		if(smlMessage[x] == sequence[sequence_index]) 							//compare with sequence
-		{ 
-			
-			sequence_index++;
-			if(sequence_index == 8)												//in complete sequence is found
+	if(matched)
+	{
+		while(parse_index < sizeof(smlMessage))
+		{
+			if((smlMessage[parse_index] & 0xF0) == 0x50)						//Scaler found first int-value of data is the scaler)
 			{
-				Serial.print("sequence_found...");
-
-				scaler = pow(10.0,(int8_t)smlMessage[x+6]);						
-				
-				if((smlMessage[x+7] & 0x0F) == 2)								////Checking datatyp of Value: 0x_2 = 1Byte
-				{
-					temp = smlMessage[x+8];
-					parse_index = x+7;											//Store parse index for next value. //!!!!Note the right order of parse-function calls, depending to the order of values in the message
-					
-					if((smlMessage[x+7] & 0xF0) == 0x60)						//Checking datatyp of Value 0x6_ = u_int, 	0x5_ = int					
-						output = (uint8_t)temp*scaler;
-					else if((smlMessage[x+7] & 0xF0) == 0x50)
-						output = (int8_t)temp*scaler;
-					
-					#ifdef DEBUG
-						Serial.print("1Byte parse complete: ");
-						Serial.println(String(output));
-					#endif
-					
-					return(output);
-				}
-				else if((smlMessage[x+7] & 0x0F) == 3)							//Checking datatyp of Value: 0x_3 = 2Byte
-				{
-					temp = smlMessage[x+8];
-					temp <<= 8;
-					temp += smlMessage[x+9];
-					parse_index = x+8;											//Store parse index for next value. //!!!!Note the right order of parse-function calls, depending to the order of values in the message
-					
-					if((smlMessage[x+7] & 0xF0) == 0x60)						//Checking datatyp of Value 0x6_ = u_int, 	0x5_ = int	
-						output = (uint16_t)temp*scaler;
-					else if((smlMessage[x+7] & 0xF0) == 0x50)
-						output = (int16_t)temp*scaler;
-					
-					#ifdef DEBUG
-						Serial.print("2Byte parse complete: ");
-						Serial.println(String(output));
-					#endif
-
-					return(output);
-				}
-				else
-				{
-					Serial.println("Parse ERROR 1 - Wrong data type");
-					parse_error_flag = true;
-					return 0;
-				}
+				scaler = pow(10.0,(int8_t)smlMessage[parse_index+1]);
+				#ifdef DEBUG
+					Serial.println("Scaler found:" + String(smlMessage[parse_index+1]));
+				#endif
+				parse_index += smlMessage[parse_index] & 0x0F;					//Go to the value (the scaler data is followed by the value data)
+				break;
 			}
+			else if ((smlMessage[parse_index] & 0xF0) == 0x70)					//List index found
+				parse_index++;													//Jump into List
+			else
+				parse_index += smlMessage[parse_index] & 0x0F;					//Jump to next List item
 		}
-		else 
-			sequence_index = 0;													//Jump back...
+		
+		n_bytes= (smlMessage[parse_index]&0x0F)-1;
+		
+		#ifdef DEBUG
+			Serial.println("Value with: " + String(n_bytes) + "byte is parsing now");
+		#endif
+
+		for(uint8_t i = 0; i < n_bytes; i++)			//parse all bytes of value to temp
+		{
+			parse_index++;
+			#ifdef DEBUG
+				Serial.println("Index:" + String(parse_index));
+				Serial.println("Value:" + String(smlMessage[parse_index]));
+			#endif
+			temp += smlMessage[parse_index];
+			if(!(n_bytes-i <= 1))
+				temp <<= 8;
+		}
+		output= (double)temp*scaler;
+
+		#ifdef DEBUG
+			Serial.println("Sequence found " + String(n_bytes) + "Byte parse complete:" + String(output));
+		#endif
+
+		return(output);
 	}
-	
-	#ifdef DEBUG2
-		Serial.println("Parse ERROR 2 - No sequence found");
-	#endif
-	parse_error_flag = true;
-	return 0;
+
+	else
+	{
+		#ifdef DEBUG
+			Serial.println("Parse ERROR - No Sequence found");
+		#endif
+		parse_error_flag = true;
+		return 0;
+	}
 }
+
+
 
 void clear_all_sml(void)
 {
